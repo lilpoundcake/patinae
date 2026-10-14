@@ -103,8 +103,7 @@ pub fn tokenize(input: &str) -> Vec<Token<'_>> {
                 // CIF quotes terminate only before whitespace (or EOF).
                 // Apostrophes in RNA descriptions are part of the value.
                 while pos < len
-                    && !(bytes[pos] == b'\''
-                        && (pos + 1 == len || is_whitespace(bytes[pos + 1])))
+                    && !(bytes[pos] == b'\'' && (pos + 1 == len || is_whitespace(bytes[pos + 1])))
                 {
                     pos += 1;
                 }
@@ -120,8 +119,7 @@ pub fn tokenize(input: &str) -> Vec<Token<'_>> {
                 pos += 1;
                 let content_start = pos;
                 while pos < len
-                    && !(bytes[pos] == b'"'
-                        && (pos + 1 == len || is_whitespace(bytes[pos + 1])))
+                    && !(bytes[pos] == b'"' && (pos + 1 == len || is_whitespace(bytes[pos + 1])))
                 {
                     pos += 1;
                 }
