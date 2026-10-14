@@ -100,7 +100,12 @@ pub fn tokenize(input: &str) -> Vec<Token<'_>> {
             b'\'' => {
                 pos += 1;
                 let content_start = pos;
-                while pos < len && bytes[pos] != b'\'' {
+                // CIF quotes terminate only before whitespace (or EOF).
+                // Apostrophes in RNA descriptions are part of the value.
+                while pos < len
+                    && !(bytes[pos] == b'\''
+                        && (pos + 1 == len || is_whitespace(bytes[pos + 1])))
+                {
                     pos += 1;
                 }
                 let content = &input[content_start..pos];
@@ -114,7 +119,10 @@ pub fn tokenize(input: &str) -> Vec<Token<'_>> {
             b'"' => {
                 pos += 1;
                 let content_start = pos;
-                while pos < len && bytes[pos] != b'"' {
+                while pos < len
+                    && !(bytes[pos] == b'"'
+                        && (pos + 1 == len || is_whitespace(bytes[pos + 1])))
+                {
                     pos += 1;
                 }
                 let content = &input[content_start..pos];
@@ -211,6 +219,14 @@ mod tests {
         let tokens = tokenize("'hello world' \"foo bar\"");
         assert_eq!(tokens[0], Token::SingleQuoted("hello world"));
         assert_eq!(tokens[1], Token::DoubleQuoted("foo bar"));
+    }
+
+    #[test]
+    fn quoted_values_keep_internal_quotes() {
+        let tokens = tokenize("'RNA (5'-R(*G)-3')' \"a\"b\" C3'");
+        assert_eq!(tokens[0], Token::SingleQuoted("RNA (5'-R(*G)-3')"));
+        assert_eq!(tokens[1], Token::DoubleQuoted("a\"b"));
+        assert_eq!(tokens[2], Token::Value("C3'"));
     }
 
     #[test]
