@@ -256,6 +256,22 @@ pub fn repair_metadata(
     water: bool,
     terminal_sequence: bool,
 ) -> IoResult<MetadataRepair> {
+    repair_metadata_with_assemblies(redo, reference, water, terminal_sequence, false)
+}
+
+/// Explicitly opt in to rebuilding assembly lists from reference-backed chain
+/// identities. Every target chain must have unambiguous reference membership;
+/// unmatched atoms may inherit only an otherwise anchored chain's membership.
+pub fn repair_metadata_with_assemblies(
+    redo: &str,
+    reference: &str,
+    water: bool,
+    terminal_sequence: bool,
+    assembly_membership: bool,
+) -> IoResult<MetadataRepair> {
+    if assembly_membership && !water {
+        return Err(invalid("assembly membership repair requires water repair"));
+    }
     let block_id = |text: &str| -> IoResult<String> {
         tokenize(text)
             .into_iter()
@@ -343,6 +359,14 @@ pub fn repair_metadata(
             .iter()
             .map(|r| asym.value(r, "_struct_asym.id").map(str::to_owned))
             .collect::<IoResult<_>>()?;
+        for group in &table(&target, "_pdbx_struct_assembly_gen")?.rows {
+            used.extend(
+                table(&target, "_pdbx_struct_assembly_gen")?
+                    .value(group, "_pdbx_struct_assembly_gen.asym_id_list")?
+                    .split(',')
+                    .map(str::to_owned),
+            );
+        }
         let mut author_water: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
         for row in &atoms.rows {
             let label = atoms.value(row, "_atom_site.label_asym_id")?;
@@ -437,10 +461,63 @@ pub fn repair_metadata(
         }
         let groups = table(&target, "_pdbx_struct_assembly_gen")?;
         let ref_groups = table(&source, "_pdbx_struct_assembly_gen")?;
+        let mut chain_sources: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+        if assembly_membership {
+            let signatures = |t: &Table| -> IoResult<BTreeSet<(String, String)>> {
+                let keys: Vec<_> = t
+                    .rows
+                    .iter()
+                    .map(|r| {
+                        Ok((
+                            t.value(r, "_pdbx_struct_assembly_gen.assembly_id")?
+                                .to_owned(),
+                            t.value(r, "_pdbx_struct_assembly_gen.oper_expression")?
+                                .to_owned(),
+                        ))
+                    })
+                    .collect::<IoResult<_>>()?;
+                let unique: BTreeSet<_> = keys.iter().cloned().collect();
+                if unique.len() != keys.len() {
+                    return Err(invalid("duplicate assembly group signature"));
+                }
+                Ok(unique)
+            };
+            if signatures(groups)? != signatures(ref_groups)? {
+                return Err(invalid("reference assembly signatures differ"));
+            }
+            for row in &atoms.rows {
+                let label = atoms.value(row, "_atom_site.label_asym_id")?;
+                let matches = index.get(&atom_key(atoms, row)?);
+                let label = if missing(label) {
+                    let matches = matches.ok_or_else(|| invalid("unanchored water chain"))?;
+                    let source_label = &matches.iter().next().unwrap().0;
+                    source_to_target
+                        .get(source_label)
+                        .ok_or_else(|| invalid("missing repaired water chain"))?
+                        .as_str()
+                } else {
+                    label
+                };
+                let sources = chain_sources.entry(label.to_owned()).or_default();
+                if let Some(matches) = matches {
+                    if matches.len() != 1 {
+                        return Err(invalid("ambiguous reference atom identity"));
+                    }
+                    let source_label = &matches.iter().next().unwrap().0;
+                    if missing(source_label) {
+                        return Err(invalid("unlabelled reference chain"));
+                    }
+                    sources.insert(source_label.clone());
+                }
+            }
+            if chain_sources.values().any(BTreeSet::is_empty) {
+                return Err(invalid("target chain has no reference anchor"));
+            }
+        }
         for group in &groups.rows {
             let list_col = groups.col("_pdbx_struct_assembly_gen.asym_id_list")?;
             let list = &group[list_col].value;
-            if !list.split(',').any(|s| s.trim().is_empty()) {
+            if !assembly_membership && !list.split(',').any(|s| s.trim().is_empty()) {
                 continue;
             }
             let id = groups.value(group, "_pdbx_struct_assembly_gen.assembly_id")?;
@@ -500,6 +577,32 @@ pub fn repair_metadata(
                 .filter(|s| !s.trim().is_empty())
                 .map(str::to_owned)
                 .collect();
+            if assembly_membership {
+                let mut expected = BTreeSet::new();
+                for (label, sources) in &chain_sources {
+                    let membership: BTreeSet<_> = sources
+                        .iter()
+                        .map(|s| ref_list.contains(s.as_str()))
+                        .collect();
+                    if membership.len() != 1 {
+                        return Err(invalid(
+                            "target chain spans conflicting reference assemblies",
+                        ));
+                    }
+                    if membership.contains(&true) {
+                        expected.insert(label.clone());
+                    }
+                }
+                labels.retain(|label| expected.contains(label));
+                for label in expected {
+                    if !labels.contains(&label) {
+                        labels.push(label);
+                    }
+                }
+                if labels.is_empty() {
+                    return Err(invalid("repaired assembly has no members"));
+                }
+            }
             let old_labels: BTreeSet<_> = labels.iter().map(String::as_str).collect();
             let authors = |t: &Table, labels: &BTreeSet<&str>| -> IoResult<BTreeSet<String>> {
                 let mut authors = BTreeSet::new();
@@ -658,5 +761,47 @@ mod tests {
         let ambiguous = format!("{source}3 O O HOH Z 2 . A 501 ? 9 9 9\n");
         assert!(repair_metadata(&old, &ambiguous, true, false).is_err());
         assert!(repair_metadata(&old, &source.replace("1 1 A,W", "1 1 W"), true, false).is_err());
+    }
+
+    #[test]
+    fn explicit_membership_mode_separates_protein_ligands_and_water() {
+        let (old, source) = water_documents();
+        let old = old.replace("1 1 ,A", "1 1 ,A,U\n2 1 ,A,B,U,V")
+            .replace("2 O O HOH ? ? . A 501 ? 4.0000 5.0000 6.0000", "2 O O HOH ? ? . A 501 ? 4 5 6\n3 O O HOH ? ? . B 502 ? 7 8 9\n4 C CA GLY B 1 2 B 10 ? 10 11 12\n5 C C1 EDO U 3 . A 101 ? 13 14 15\n6 C C1 EDO V 3 . B 102 ? 16 17 18");
+        let source = source.replace("1 1 A,W", "1 1 A,X,WA\n2 1 B,Y,WB")
+            .replace("2 O O HOH W 2 . A 501 ? 9.0000 9.0000 9.0000", "2 O O HOH WA 2 . A 501 ? 90 90 90\n3 O O HOH WB 2 . B 502 ? 90 90 90\n4 C CA GLY B 1 2 B 10 ? 90 90 90\n5 C C1 EDO X 3 . A 101 ? 90 90 90\n6 C C1 EDO Y 3 . B 102 ? 90 90 90");
+        let prepare = |s: String| {
+            s.replace("1 polymer\n2 water", "1 polymer\n2 water\n3 non-polymer")
+                .replace(
+                    "_pdbx_struct_assembly.id\n1\n",
+                    "_pdbx_struct_assembly.id\n1\n2\n",
+                )
+        };
+        let old = prepare(old);
+        let source = prepare(source);
+        // The old/default mode must still refuse this conflict.
+        assert!(repair_metadata(&old, &source, true, false).is_err());
+        let fixed = repair_metadata_with_assemblies(&old, &source, true, false, true).unwrap();
+        assert!(fixed.cif.contains("1 1 A,U,R0"));
+        assert!(fixed.cif.contains("2 1 B,V,R1"));
+        assert!(fixed.cif.contains("B 102 ? 16 17 18"));
+        assert_eq!(fixed.water_atoms, 2);
+        assert!(repair_metadata_with_assemblies(
+            &old,
+            &source.replace("B 102", "B 999"),
+            true,
+            false,
+            true
+        )
+        .is_err());
+        // One target chain must not merge ligands with different memberships.
+        assert!(repair_metadata_with_assemblies(
+            &old.replace("EDO V 3", "EDO U 3"),
+            &source,
+            true,
+            false,
+            true
+        )
+        .is_err());
     }
 }
