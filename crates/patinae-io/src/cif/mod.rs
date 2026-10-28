@@ -5,6 +5,7 @@
 pub(crate) mod common;
 pub mod lexer;
 mod parser;
+pub mod repair;
 mod writer;
 
 pub use parser::CifReader;
