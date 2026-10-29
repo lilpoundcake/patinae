@@ -83,10 +83,16 @@ impl EntityRows {
         field: impl Fn(&str) -> Option<String>,
     ) {
         match category {
-            EntityCategory::Scheme => self.asym.push(KindRow {
-                id: field("asym_id"),
-                kind: field("entity_id"),
-            }),
+            EntityCategory::Scheme => {
+                // Scheme rows may describe unresolved/missing chains (`?`).
+                // Such a row contributes no chain mapping; do not invent one.
+                if let (Some(id), Some(entity)) = (field("asym_id"), field("entity_id")) {
+                    self.asym.push(KindRow {
+                        id: Some(id),
+                        kind: Some(entity),
+                    });
+                }
+            }
             EntityCategory::Asym => self.asym.push(KindRow {
                 id: field("id"),
                 kind: field("entity_id"),
