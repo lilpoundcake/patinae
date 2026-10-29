@@ -120,7 +120,11 @@ impl EntityRows {
         let mut result = std::collections::BTreeMap::new();
         for row in &self.asym {
             let id = required(&row.id, "_struct_asym.id")?;
-            let entity = required(&row.kind, "_struct_asym.entity_id")?;
+            // Unknown entity links (`?`/`.`) are not invented. They may be
+            // supplied by an explicit scheme row, or remain unavailable.
+            let Some(entity) = row.kind.as_deref() else {
+                continue;
+            };
             if let Some(old) = result.insert(id.to_owned(), entity.to_owned()) {
                 if old != entity {
                     return Err(IoError::parse_msg(
@@ -533,6 +537,8 @@ _entity_poly_seq.mon_id
             .unwrap();
         assert_eq!(mol.entry_id.as_deref(), Some("1abc"));
         assert_eq!(mol.asym_entities.get("B").map(String::as_str), Some("2"));
+        let mol = cif("loop_\n_struct_asym.id\n_struct_asym.entity_id\nA 1\nB ?\n").unwrap();
+        assert_eq!(mol.asym_entities.len(), 1);
         assert_eq!(
             mol.atoms_slice()[0].residue.label_entity_id.as_deref(),
             Some("1")
