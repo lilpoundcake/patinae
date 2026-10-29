@@ -12,6 +12,8 @@ use super::lexer::{tokenize, Token};
 
 mod identity;
 pub use identity::{repair_identity_and_polymer_types, IdentityTypeRepair};
+mod terminal;
+pub use terminal::{repair_anchored_terminal_sequences, TerminalSequenceRepair};
 
 #[derive(Debug)]
 pub struct MetadataRepair {

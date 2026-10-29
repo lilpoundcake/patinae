@@ -10,12 +10,12 @@ pub struct IdentityTypeRepair {
     pub changes: Vec<(usize, usize, String, String)>,
 }
 
-fn canonical_id(value: &str) -> String {
+pub(super) fn canonical_id(value: &str) -> String {
     let value = value.to_ascii_lowercase();
     value.strip_prefix("pdb_0000").unwrap_or(&value).to_owned()
 }
 
-fn entry_id(tables: &HashMap<String, Table>) -> IoResult<&str> {
+pub(super) fn entry_id(tables: &HashMap<String, Table>) -> IoResult<&str> {
     let entry = table(tables, "_entry")?;
     if entry.rows.len() != 1 {
         return Err(invalid("identity repair requires one _entry.id"));
@@ -23,7 +23,7 @@ fn entry_id(tables: &HashMap<String, Table>) -> IoResult<&str> {
     entry.value(&entry.rows[0], "_entry.id")
 }
 
-fn polymers(tables: &HashMap<String, Table>) -> IoResult<BTreeSet<String>> {
+pub(super) fn polymers(tables: &HashMap<String, Table>) -> IoResult<BTreeSet<String>> {
     let entities = table(tables, "_entity")?;
     let mut seen = BTreeSet::new();
     let mut result = BTreeSet::new();
@@ -39,7 +39,7 @@ fn polymers(tables: &HashMap<String, Table>) -> IoResult<BTreeSet<String>> {
     Ok(result)
 }
 
-fn atom_entity<'a>(
+pub(super) fn atom_entity<'a>(
     tables: &'a HashMap<String, Table>,
     atoms: &Table,
     row: &'a [Cell],
@@ -75,7 +75,7 @@ fn atom_entity<'a>(
 /// Prove every observed polymer residue using at least one exact atom key.
 /// Alternate conformers/models may repeat keys only within the same chain/entity.
 /// No coordinates, sequence alignment, or matching entity numbers are used.
-fn anchored_chains(
+pub(super) fn anchored_chains(
     target: &HashMap<String, Table>,
     source: &HashMap<String, Table>,
     selected: &BTreeSet<String>,
