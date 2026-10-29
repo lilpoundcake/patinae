@@ -45,11 +45,18 @@ struct MonomerRow {
     mon_id: Option<String>,
 }
 
+struct PolymerRow {
+    id: Option<String>,
+    kind: Option<String>,
+    sequence: Option<String>,
+    canonical_sequence: Option<String>,
+}
+
 /// Rows are validated in [`EntityRows::resolve`], so metadata-only blocks still load.
 #[derive(Default)]
 pub(crate) struct EntityRows {
     entities: Vec<KindRow>,
-    polymers: Vec<KindRow>,
+    polymers: Vec<PolymerRow>,
     monomers: Vec<MonomerRow>,
     error: Option<IoError>,
 }
@@ -72,9 +79,11 @@ impl EntityRows {
                 id: field("id"),
                 kind: field("type"),
             }),
-            EntityCategory::Poly => self.polymers.push(KindRow {
+            EntityCategory::Poly => self.polymers.push(PolymerRow {
                 id: field("entity_id"),
                 kind: field("type"),
+                sequence: field("pdbx_seq_one_letter_code"),
+                canonical_sequence: field("pdbx_seq_one_letter_code_can"),
             }),
             EntityCategory::PolySeq => self.monomers.push(MonomerRow {
                 entity_id: field("entity_id"),
@@ -140,6 +149,23 @@ impl EntityRows {
             }
         }
 
+        // One-letter strings are another dictionary representation of the full
+        // sequence (e.g. SAbDab). Never fill holes in an existing monomer table:
+        // a partial table remains an error, not an automatic metadata repair.
+        for row in &self.polymers {
+            let id = required(&row.id, "_entity_poly.entity_id")?;
+            let polymer = polymer_mut(&mut entities, id);
+            if polymer.sequence.is_empty() {
+                if let Some(text) = row
+                    .sequence
+                    .as_deref()
+                    .or(row.canonical_sequence.as_deref())
+                {
+                    polymer.sequence = one_letter_sequence(text, polymer.kind.as_ref())?;
+                }
+            }
+        }
+
         // The dictionary numbers monomers 1..N; a skipped `num` means rows were lost.
         for entity in &entities {
             let Some(polymer) = &entity.polymer else {
@@ -156,6 +182,86 @@ impl EntityRows {
 
         Ok(entities)
     }
+}
+
+/// Decode PDBx one-letter syntax; parenthesized CCD ids occupy one position.
+/// Unsupported/ambiguous encodings are errors, never silently empty sequences.
+fn one_letter_sequence(text: &str, kind: Option<&PolymerKind>) -> IoResult<Vec<String>> {
+    let error = || IoError::parse_msg("Invalid or unsupported _entity_poly one-letter sequence");
+    let mut chars = text.chars().filter(|c| !c.is_ascii_whitespace());
+    let mut sequence = Vec::new();
+    while let Some(c) = chars.next() {
+        let monomer = if c == '(' {
+            let mut code = String::new();
+            let mut closed = false;
+            for c in chars.by_ref() {
+                if c == ')' {
+                    closed = true;
+                    break;
+                }
+                if !c.is_ascii_uppercase() && !c.is_ascii_digit() {
+                    return Err(error());
+                }
+                code.push(c);
+            }
+            if !closed || code.is_empty() || code.len() > 5 {
+                return Err(error());
+            }
+            code
+        } else {
+            match kind {
+                Some(PolymerKind::PeptideL | PolymerKind::PeptideD) => match c {
+                    'A' => "ALA",
+                    'R' => "ARG",
+                    'N' => "ASN",
+                    'D' => "ASP",
+                    'C' => "CYS",
+                    'Q' => "GLN",
+                    'E' => "GLU",
+                    'G' => "GLY",
+                    'H' => "HIS",
+                    'I' => "ILE",
+                    'L' => "LEU",
+                    'K' => "LYS",
+                    'M' => "MET",
+                    'F' => "PHE",
+                    'P' => "PRO",
+                    'S' => "SER",
+                    'T' => "THR",
+                    'W' => "TRP",
+                    'Y' => "TYR",
+                    'V' => "VAL",
+                    'X' => "UNK",
+                    'B' => "ASX",
+                    'Z' => "GLX",
+                    'J' => "XLE",
+                    'U' => "SEC",
+                    'O' => "PYL",
+                    _ => return Err(error()),
+                }
+                .to_owned(),
+                Some(PolymerKind::Dna) => match c {
+                    'A' => "DA",
+                    'C' => "DC",
+                    'G' => "DG",
+                    'T' => "DT",
+                    'N' => "DN",
+                    _ => return Err(error()),
+                }
+                .to_owned(),
+                Some(PolymerKind::Rna) if matches!(c, 'A' | 'C' | 'G' | 'U' | 'N') => c.to_string(),
+                _ => return Err(error()),
+            }
+        };
+        sequence.push(monomer);
+        if sequence.len() > MAX_ENTITY_POLY_SEQ_NUM as usize {
+            return Err(error());
+        }
+    }
+    if sequence.is_empty() {
+        return Err(error());
+    }
+    Ok(sequence)
 }
 
 fn polymer_mut<'a>(entities: &'a mut Vec<Entity>, id: &str) -> &'a mut EntityPolymer {
@@ -336,5 +442,38 @@ _entity_poly_seq.mon_id
         let pdb =
             "ATOM      1  CA  GLY A   1       0.000   0.000   0.000  1.00  0.00           C\n";
         assert!(crate::pdb::read_pdb_str(pdb).unwrap().entities.is_empty());
+    }
+
+    #[test]
+    fn one_letter_sequences_support_modified_monomers_and_multiline_text() {
+        let mol = cif("_entity.id 1\n_entity.type polymer\n_entity_poly.entity_id 1\n_entity_poly.type 'polypeptide(L)'\n_entity_poly.pdbx_seq_one_letter_code\n;A(MSE)\nGX\n;\n").unwrap();
+        assert_eq!(polymer(&mol, "1").sequence, ["ALA", "MSE", "GLY", "UNK"]);
+        for (kind, text, expected) in [
+            (
+                "polydeoxyribonucleotide",
+                "ACGTN",
+                vec!["DA", "DC", "DG", "DT", "DN"],
+            ),
+            ("polyribonucleotide", "ACGUN", vec!["A", "C", "G", "U", "N"]),
+        ] {
+            let mol = cif(&format!("_entity_poly.entity_id 1\n_entity_poly.type {kind}\n_entity_poly.pdbx_seq_one_letter_code_can {text}\n")).unwrap();
+            assert_eq!(polymer(&mol, "1").sequence, expected);
+        }
+    }
+
+    #[test]
+    fn one_letter_fallback_does_not_override_or_repair_monomer_table() {
+        let base = "_entity_poly.entity_id 1\n_entity_poly.type 'polypeptide(L)'\n_entity_poly.pdbx_seq_one_letter_code AAA\nloop_\n_entity_poly_seq.entity_id\n_entity_poly_seq.num\n_entity_poly_seq.mon_id\n";
+        let mol = cif(&format!("{base}1 1 MSE\n")).unwrap();
+        assert_eq!(polymer(&mol, "1").sequence, ["MSE"]);
+        assert!(cif(&format!("{base}1 1 MET\n1 3 GLY\n")).is_err());
+    }
+
+    #[test]
+    fn malformed_one_letter_sequences_are_rejected() {
+        for text in ["A(MSE", "A()G", "A(B(C))", "A*G", "A)G"] {
+            assert!(one_letter_sequence(text, Some(&PolymerKind::PeptideL)).is_err());
+        }
+        assert!(one_letter_sequence("ACGT", Some(&PolymerKind::DnaRnaHybrid)).is_err());
     }
 }
