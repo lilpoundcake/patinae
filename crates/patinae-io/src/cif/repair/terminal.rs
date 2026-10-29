@@ -47,10 +47,17 @@ fn check_primary_sequence(
         // A standard amino-acid symbol in e.g. an aminoacyl-RNA must match
         // the explicit CCD identity at this very position. No parent or D/L
         // equivalence, unknown substitution, or new monomer is inferred.
-        if !matches(kind) && !matches(&patinae_mol::PolymerKind::PeptideL) {
-            return Err(invalid(
-                "primary one-letter symbol disagrees with explicit monomer metadata",
-            ));
+        let mixed_nucleotide = matches!(
+            kind,
+            patinae_mol::PolymerKind::Dna
+                | patinae_mol::PolymerKind::Rna
+                | patinae_mol::PolymerKind::DnaRnaHybrid
+        ) && (matches(&patinae_mol::PolymerKind::Dna)
+            || matches(&patinae_mol::PolymerKind::Rna));
+        if !matches(kind) && !matches(&patinae_mol::PolymerKind::PeptideL) && !mixed_nucleotide {
+            return Err(invalid(format!(
+                "primary one-letter symbol disagrees with explicit monomer metadata at position {}: token {token:?}, expected {monomer}",count+1
+            )));
         }
         count += 1;
     }
@@ -390,6 +397,9 @@ mod tests {
             &["C", "C", "DA", "PHE", "ACA"]
         )
         .is_ok());
+        assert!(
+            check_primary_sequence("CCAF", &PolymerKind::Rna, &["C", "C", "DA", "PHE"]).is_ok()
+        );
         assert!(check_primary_sequence(
             "CC(DA)F(ACA)",
             &PolymerKind::Rna,
