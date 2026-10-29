@@ -14,6 +14,10 @@ mod identity;
 pub use identity::{repair_identity_and_polymer_types, IdentityTypeRepair};
 mod terminal;
 pub use terminal::{repair_anchored_terminal_sequences, TerminalSequenceRepair};
+mod positions;
+pub use positions::{
+    map_polymer_positions, ChainSequenceMap, PolymerPositionMap, ResiduePositionMap,
+};
 
 #[derive(Debug)]
 pub struct MetadataRepair {
