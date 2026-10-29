@@ -15,6 +15,7 @@ pub(crate) enum EntityCategory {
     PolySeq,
     Asym,
     Entry,
+    Scheme,
 }
 
 impl EntityCategory {
@@ -25,6 +26,7 @@ impl EntityCategory {
             "_entity_poly_seq" => Some(Self::PolySeq),
             "_struct_asym" => Some(Self::Asym),
             "_entry" => Some(Self::Entry),
+            "_pdbx_nonpoly_scheme" | "_pdbx_poly_seq_scheme" => Some(Self::Scheme),
             _ => None,
         }
     }
@@ -81,6 +83,10 @@ impl EntityRows {
         field: impl Fn(&str) -> Option<String>,
     ) {
         match category {
+            EntityCategory::Scheme => self.asym.push(KindRow {
+                id: field("asym_id"),
+                kind: field("entity_id"),
+            }),
             EntityCategory::Asym => self.asym.push(KindRow {
                 id: field("id"),
                 kind: field("entity_id"),
@@ -526,5 +532,8 @@ _entity_poly_seq.mon_id
             Some("1")
         );
         assert!(cif("loop_\n_struct_asym.id\n_struct_asym.entity_id\nA 1\nA 2\n").is_err());
+        let mol =
+            cif("_pdbx_nonpoly_scheme.asym_id B\n_pdbx_nonpoly_scheme.entity_id 2\n").unwrap();
+        assert_eq!(mol.asym_entities.get("B").map(String::as_str), Some("2"));
     }
 }
