@@ -240,7 +240,7 @@ impl EntityRows {
 
 /// Decode PDBx one-letter syntax; parenthesized CCD ids occupy one position.
 /// Unsupported/ambiguous encodings are errors, never silently empty sequences.
-fn one_letter_sequence(text: &str, kind: Option<&PolymerKind>) -> IoResult<Vec<String>> {
+pub(crate) fn one_letter_sequence(text: &str, kind: Option<&PolymerKind>) -> IoResult<Vec<String>> {
     let error = || IoError::parse_msg("Invalid or unsupported _entity_poly one-letter sequence");
     let mut chars = text.chars().filter(|c| !c.is_ascii_whitespace());
     let mut sequence = Vec::new();
