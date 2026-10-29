@@ -11,6 +11,57 @@ pub struct TerminalSequenceRepair {
     pub changes: Vec<(usize, usize, String, String)>,
 }
 
+/// Interpret mixed-polymer symbols only against explicit CCD monomers.
+/// Normal reader fallback decoding is deliberately unchanged.
+fn check_primary_sequence(
+    text: &str,
+    kind: &patinae_mol::PolymerKind,
+    expected: &[&str],
+) -> IoResult<()> {
+    let mut chars = text.chars().filter(|c| !c.is_ascii_whitespace());
+    let mut count = 0;
+    while let Some(c) = chars.next() {
+        let mut token = c.to_string();
+        if c == '(' {
+            let mut closed = false;
+            for c in chars.by_ref() {
+                token.push(c);
+                if c == ')' {
+                    closed = true;
+                    break;
+                }
+            }
+            if !closed {
+                return Err(invalid("unterminated primary sequence monomer"));
+            }
+        }
+        let Some(&monomer) = expected.get(count) else {
+            return Err(invalid(
+                "primary one-letter sequence is longer than monomer metadata",
+            ));
+        };
+        let matches = |candidate: &patinae_mol::PolymerKind| {
+            crate::entity::one_letter_sequence(&token, Some(candidate))
+                .is_ok_and(|decoded| decoded.len() == 1 && decoded[0] == monomer)
+        };
+        // A standard amino-acid symbol in e.g. an aminoacyl-RNA must match
+        // the explicit CCD identity at this very position. No parent or D/L
+        // equivalence, unknown substitution, or new monomer is inferred.
+        if !matches(kind) && !matches(&patinae_mol::PolymerKind::PeptideL) {
+            return Err(invalid(
+                "primary one-letter symbol disagrees with explicit monomer metadata",
+            ));
+        }
+        count += 1;
+    }
+    if count != expected.len() {
+        return Err(invalid(
+            "primary one-letter sequence length differs from monomer metadata",
+        ));
+    }
+    Ok(())
+}
+
 /// Explicit metadata-only repair against an independently pinned reference.
 /// Target sequences must be exact prefixes of complete reference sequences.
 /// Every selected entity needs observed residue anchors, and every matching
@@ -203,14 +254,9 @@ pub fn repair_anchored_terminal_sequences(
                             );
                             let primary =
                                 &ref_row[ref_poly.col("_entity_poly.pdbx_seq_one_letter_code")?];
-                            let decoded =
-                                crate::entity::one_letter_sequence(&primary.value, Some(&kind))?;
-                            if decoded
-                                .iter()
-                                .ne(reference_seq.values().map(|m| m.as_str()))
-                            {
-                                return Err(invalid("reference one-letter sequence disagrees with full monomer metadata"));
-                            }
+                            let reference_monomers: Vec<_> =
+                                reference_seq.values().map(|m| m.as_str()).collect();
+                            check_primary_sequence(&primary.value, &kind, &reference_monomers)?;
                             let replacement = &ref_row[ref_poly.col(field)?];
                             if field.ends_with("_can") {
                                 // Canonical strings are symbols, not CCD identities. Use
@@ -241,21 +287,19 @@ pub fn repair_anchored_terminal_sequences(
                                         "canonical one-letter prefix disagrees with reference",
                                     ));
                                 }
-                                for (mon, symbol) in decoded.iter().zip(&after) {
-                                    if (mon == "UNK" && symbol != "UNK")
+                                for (mon, symbol) in reference_monomers.iter().zip(&after) {
+                                    if (*mon == "UNK" && symbol != "UNK")
                                         || (nucleotide
-                                            && matches!(mon.as_str(), "N" | "DN")
+                                            && matches!(*mon, "N" | "DN")
                                             && !matches!(symbol.as_str(), "UNK" | "ASN"))
                                     {
                                         return Err(invalid("canonical reference claims known identity for an unknown monomer"));
                                     }
                                 }
                             } else {
-                                let before =
-                                    crate::entity::one_letter_sequence(&row[i].value, Some(&kind))?;
-                                if before.iter().ne(declared.values().map(|m| m.as_str())) {
-                                    return Err(invalid("target one-letter sequence disagrees with monomer metadata"));
-                                }
+                                let target_monomers: Vec<_> =
+                                    declared.values().map(|m| m.as_str()).collect();
+                                check_primary_sequence(&row[i].value, &kind, &target_monomers)?;
                             }
                             edits.push((
                                 row[i].span.clone(),
@@ -337,6 +381,31 @@ pub fn repair_anchored_terminal_sequences(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn mixed_polymer_symbols_require_explicit_monomer_context() {
+        use patinae_mol::PolymerKind;
+        assert!(check_primary_sequence(
+            "CC(DA)F(ACA)",
+            &PolymerKind::Rna,
+            &["C", "C", "DA", "PHE", "ACA"]
+        )
+        .is_ok());
+        assert!(check_primary_sequence(
+            "CC(DA)F(ACA)",
+            &PolymerKind::Rna,
+            &["C", "C", "DA", "GLY", "ACA"]
+        )
+        .is_err());
+        assert!(check_primary_sequence(
+            "CC(DA)X(ACA)",
+            &PolymerKind::Rna,
+            &["C", "C", "DA", "PHE", "ACA"]
+        )
+        .is_err());
+        assert!(check_primary_sequence("A", &PolymerKind::PeptideL, &["DAL"]).is_err());
+        assert!(check_primary_sequence("(DAL)", &PolymerKind::PeptideL, &["DAL"]).is_ok());
+        assert!(check_primary_sequence("G", &PolymerKind::PeptideL, &["GLY", "ALA"]).is_err());
+    }
     fn doc(entity: &str, sequence: &str, position: u32) -> String {
         format!("data_1abc\n_entry.id 1abc\n_entity.id {entity}\n_entity.type polymer\nloop_\n_entity_poly_seq.entity_id\n_entity_poly_seq.num\n_entity_poly_seq.mon_id\n{sequence}\n#\nloop_\n_atom_site.id\n_atom_site.type_symbol\n_atom_site.label_atom_id\n_atom_site.label_comp_id\n_atom_site.label_asym_id\n_atom_site.label_entity_id\n_atom_site.label_seq_id\n_atom_site.auth_asym_id\n_atom_site.auth_seq_id\n_atom_site.pdbx_PDB_ins_code\n_atom_site.Cartn_x\n_atom_site.Cartn_y\n_atom_site.Cartn_z\n1 C CA GLY X {entity} {position} A 10 ? 1.234500 2.000 3.0\n")
     }
