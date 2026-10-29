@@ -13,6 +13,8 @@ pub(crate) enum EntityCategory {
     Entity,
     Poly,
     PolySeq,
+    Asym,
+    Entry,
 }
 
 impl EntityCategory {
@@ -21,6 +23,8 @@ impl EntityCategory {
             "_entity" => Some(Self::Entity),
             "_entity_poly" => Some(Self::Poly),
             "_entity_poly_seq" => Some(Self::PolySeq),
+            "_struct_asym" => Some(Self::Asym),
+            "_entry" => Some(Self::Entry),
             _ => None,
         }
     }
@@ -59,6 +63,8 @@ pub(crate) struct EntityRows {
     polymers: Vec<PolymerRow>,
     monomers: Vec<MonomerRow>,
     error: Option<IoError>,
+    asym: Vec<KindRow>,
+    entry_ids: Vec<Option<String>>,
 }
 
 fn required<'a>(value: &'a Option<String>, field: &str) -> IoResult<&'a str> {
@@ -75,6 +81,11 @@ impl EntityRows {
         field: impl Fn(&str) -> Option<String>,
     ) {
         match category {
+            EntityCategory::Asym => self.asym.push(KindRow {
+                id: field("id"),
+                kind: field("entity_id"),
+            }),
+            EntityCategory::Entry => self.entry_ids.push(field("id")),
             EntityCategory::Entity => self.entities.push(KindRow {
                 id: field("id"),
                 kind: field("type"),
@@ -91,6 +102,33 @@ impl EntityRows {
                 mon_id: field("mon_id"),
             }),
         }
+    }
+
+    pub(crate) fn asym_entities(&self) -> IoResult<std::collections::BTreeMap<String, String>> {
+        let mut result = std::collections::BTreeMap::new();
+        for row in &self.asym {
+            let id = required(&row.id, "_struct_asym.id")?;
+            let entity = required(&row.kind, "_struct_asym.entity_id")?;
+            if let Some(old) = result.insert(id.to_owned(), entity.to_owned()) {
+                if old != entity {
+                    return Err(IoError::parse_msg(
+                        "Conflicting _struct_asym entity mapping",
+                    ));
+                }
+            }
+        }
+        Ok(result)
+    }
+
+    pub(crate) fn entry_id(&self) -> IoResult<Option<String>> {
+        let mut result: Option<String> = None;
+        for id in self.entry_ids.iter().flatten() {
+            if result.as_ref().is_some_and(|old| old != id) {
+                return Err(IoError::parse_msg("Conflicting _entry.id"));
+            }
+            result = Some(id.clone());
+        }
+        Ok(result)
     }
 
     /// Record a malformed category; reported by [`EntityRows::resolve`].
@@ -475,5 +513,18 @@ _entity_poly_seq.mon_id
             assert!(one_letter_sequence(text, Some(&PolymerKind::PeptideL)).is_err());
         }
         assert!(one_letter_sequence("ACGT", Some(&PolymerKind::DnaRnaHybrid)).is_err());
+    }
+
+    #[test]
+    fn entry_identity_and_asym_entity_mapping_are_metadata_not_atom_rewrites() {
+        let mol = cif("_entry.id 1abc\nloop_\n_struct_asym.id\n_struct_asym.entity_id\nA 1\nB 2\n")
+            .unwrap();
+        assert_eq!(mol.entry_id.as_deref(), Some("1abc"));
+        assert_eq!(mol.asym_entities.get("B").map(String::as_str), Some("2"));
+        assert_eq!(
+            mol.atoms_slice()[0].residue.label_entity_id.as_deref(),
+            Some("1")
+        );
+        assert!(cif("loop_\n_struct_asym.id\n_struct_asym.entity_id\nA 1\nA 2\n").is_err());
     }
 }

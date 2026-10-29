@@ -266,6 +266,7 @@ fn parse_cif_block(
                 pos = parse_symmetry(tokens, pos, &mut block.space_group);
             }
             Token::DataName(name) if name.starts_with("_entry.") => {
+                parse_entity_single(tokens, pos, &mut block.entities);
                 pos = parse_entry(tokens, pos, &mut block.title);
             }
             // Handle single-item secondary structure format (when not in a loop)
@@ -315,6 +316,8 @@ fn parse_cif_block(
         block.assemblies.push(&category, row);
     }
     let definitions = block.assemblies.resolve()?;
+    let asym_entities = block.entities.asym_entities()?;
+    let entry_id = block.entities.entry_id()?;
     let entities = block.entities.resolve()?;
     if definitions.is_empty() {
         for model in block.models.values_mut() {
@@ -327,6 +330,8 @@ fn parse_cif_block(
     for mol in &mut molecules {
         mol.assembly.definitions = definitions.clone();
         mol.entities = entities.clone();
+        mol.asym_entities = asym_entities.clone();
+        mol.entry_id = entry_id.clone();
         block.cell.apply_to(mol, block.space_group.as_deref());
         apply_secondary_structure(mol, &block.ss_ranges);
 

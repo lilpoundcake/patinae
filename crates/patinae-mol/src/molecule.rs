@@ -101,6 +101,12 @@ pub struct ObjectMolecule {
     /// file; edits do not update them. Empty for other formats.
     #[serde(default)]
     pub entities: Vec<crate::Entity>,
+    /// `_struct_asym`: label chain to entity, without rewriting atom labels.
+    #[serde(default)]
+    pub asym_entities: std::collections::BTreeMap<String, String>,
+    /// `_entry.id`, distinct from an arbitrary data-block name.
+    #[serde(default)]
+    pub entry_id: Option<String>,
 }
 
 impl Default for ObjectMolecule {
@@ -120,6 +126,8 @@ impl Default for ObjectMolecule {
             subchain_partition: OnceLock::new(),
             assembly: crate::AssemblyMetadata::default(),
             entities: Vec::new(),
+            asym_entities: Default::default(),
+            entry_id: None,
         }
     }
 }
@@ -185,6 +193,8 @@ impl ObjectMolecule {
             subchain_partition: OnceLock::new(),
             assembly: crate::AssemblyMetadata::default(),
             entities: Vec::new(),
+            asym_entities: Default::default(),
+            entry_id: None,
         }
     }
 

@@ -221,6 +221,8 @@ fn parse_data_block(block: BcifDataBlock, bond_tolerance: f32) -> IoResult<Vec<O
     }
 
     let definitions = assemblies.resolve()?;
+    let asym_entities = entities.asym_entities()?;
+    let entry_id = entities.entry_id()?;
     let entities = entities.resolve()?;
     if definitions.is_empty() {
         for model in models.values_mut() {
@@ -233,6 +235,8 @@ fn parse_data_block(block: BcifDataBlock, bond_tolerance: f32) -> IoResult<Vec<O
     for mol in &mut molecules {
         mol.assembly.definitions = definitions.clone();
         mol.entities = entities.clone();
+        mol.asym_entities = asym_entities.clone();
+        mol.entry_id = entry_id.clone();
         cell.apply_to(mol, space_group.as_deref());
         apply_secondary_structure(mol, &ss_ranges);
         mol.classify_atoms();
