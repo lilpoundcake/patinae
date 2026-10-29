@@ -10,6 +10,9 @@ use crate::{IoError, IoResult};
 
 use super::lexer::{tokenize, Token};
 
+mod identity;
+pub use identity::{repair_identity_and_polymer_types, IdentityTypeRepair};
+
 #[derive(Debug)]
 pub struct MetadataRepair {
     pub cif: String,
@@ -103,6 +106,8 @@ fn tables(text: &str) -> IoResult<HashMap<String, Table>> {
         matches!(
             category,
             "_atom_site"
+                | "_entry"
+                | "_entity_poly"
                 | "_entity"
                 | "_entity_poly_seq"
                 | "_struct_asym"
