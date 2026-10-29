@@ -39,6 +39,39 @@ fn polymers(tables: &HashMap<String, Table>) -> IoResult<BTreeSet<String>> {
     Ok(result)
 }
 
+fn atom_entity<'a>(
+    tables: &'a HashMap<String, Table>,
+    atoms: &Table,
+    row: &'a [Cell],
+) -> IoResult<&'a str> {
+    let raw = atoms.value(row, "_atom_site.label_entity_id")?;
+    let chain = atoms.value(row, "_atom_site.label_asym_id")?;
+    let mut mapped = None;
+    if let Some(asym) = tables.get("_struct_asym") {
+        for entry in &asym.rows {
+            if asym.value(entry, "_struct_asym.id")? != chain {
+                continue;
+            }
+            let entity = asym.value(entry, "_struct_asym.entity_id")?;
+            if missing(entity) {
+                continue;
+            }
+            if mapped.is_some_and(|previous| previous != entity) {
+                return Err(invalid("conflicting struct_asym entity anchors"));
+            }
+            mapped = Some(entity);
+        }
+    }
+    if !missing(raw) {
+        if mapped.is_some_and(|entity| entity != raw) {
+            return Err(invalid("atom/struct_asym entity conflict"));
+        }
+        Ok(raw)
+    } else {
+        Ok(mapped.unwrap_or(raw))
+    }
+}
+
 /// Prove every observed polymer residue using at least one exact atom key.
 /// Alternate conformers/models may repeat keys only within the same chain/entity.
 /// No coordinates, sequence alignment, or matching entity numbers are used.
@@ -52,7 +85,7 @@ fn anchored_chains(
     let source_polymers = polymers(source)?;
     let mut index: BTreeMap<Vec<String>, BTreeSet<(String, String)>> = BTreeMap::new();
     for row in &reference.rows {
-        let entity = reference.value(row, "_atom_site.label_entity_id")?;
+        let entity = atom_entity(source, reference, row)?;
         if !source_polymers.contains(entity) {
             continue;
         }
@@ -70,7 +103,7 @@ fn anchored_chains(
     type ResidueAnchor = (String, String, String, String, String, String);
     let mut residues: BTreeMap<ResidueAnchor, BTreeSet<(String, String)>> = BTreeMap::new();
     for row in &atoms.rows {
-        let entity = atoms.value(row, "_atom_site.label_entity_id")?;
+        let entity = atom_entity(target, atoms, row)?;
         if !selected.contains(entity) {
             continue;
         }
@@ -168,7 +201,10 @@ pub fn repair_identity_and_polymer_types(
     type_entities: &[String],
 ) -> IoResult<IdentityTypeRepair> {
     let expected = canonical_id(expected_entry_id);
-    if expected.len() != 4 || !expected.bytes().all(|b| b.is_ascii_alphanumeric()) {
+    if expected.len() != 4
+        || !expected.as_bytes()[0].is_ascii_digit()
+        || !expected.bytes().all(|b| b.is_ascii_alphanumeric())
+    {
         return Err(invalid("expected entry ID must be a four-character PDB ID"));
     }
     let target = tables(redo)?;
@@ -258,7 +294,7 @@ pub fn repair_identity_and_polymer_types(
             }
             let atoms = table(&target, "_atom_site")?;
             for row in &atoms.rows {
-                if atoms.value(row, "_atom_site.label_entity_id")? != entity {
+                if atom_entity(&target, atoms, row)? != entity {
                     continue;
                 }
                 let n = atoms
@@ -283,7 +319,15 @@ pub fn repair_identity_and_polymer_types(
                     edits.push((old.span.clone(), reference[kind.span.clone()].to_owned()))
                 }
                 Some(_) => return Err(invalid("selected polymer type is already specified")),
-                None => additions.push((entity.clone(), reference[kind.span.clone()].to_owned())),
+                None => {
+                    if !entity
+                        .bytes()
+                        .all(|b| b.is_ascii_alphanumeric() || b == b'_')
+                    {
+                        return Err(invalid("unsafe entity token for metadata insertion"));
+                    }
+                    additions.push((entity.clone(), reference[kind.span.clone()].to_owned()));
+                }
             }
         }
     }
@@ -494,6 +538,26 @@ mod tests {
         );
         assert!(repair_identity_and_polymer_types(
             &target.replace("other", "'polypeptide(L)'"),
+            &reference,
+            "1e29",
+            false,
+            &["5".into()]
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn missing_atom_entity_uses_proven_struct_asym_without_token_edits() {
+        let target = doc("1e29", "5", "other").replace("X 5 1 A", "X ? 1 A");
+        let target = format!("{target}\n_struct_asym.id X\n_struct_asym.entity_id 5\n");
+        let reference = doc("1e29", "3", "'polypeptide(L)'");
+        let result =
+            repair_identity_and_polymer_types(&target, &reference, "1e29", false, &["5".into()])
+                .unwrap();
+        assert!(result.cif.contains("X ? 1 A"));
+        let conflict = target.replace("X ? 1 A", "X 6 1 A");
+        assert!(repair_identity_and_polymer_types(
+            &conflict,
             &reference,
             "1e29",
             false,
